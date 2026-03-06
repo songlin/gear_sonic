@@ -368,12 +368,12 @@ class ElasticBand:
     ref: https://github.com/unitreerobotics/unitree_mujoco
     """
 
-    def __init__(self, zoffset=0.0):
+    def __init__(self, point=np.array([0, 0, 1])):
         self.kp_pos = 10000
         self.kd_pos = 1000
         self.kp_ang = 1000
         self.kd_ang = 10
-        self.point = np.array([0, 0, 1+zoffset])
+        self.point = point
         self.length = 0.0
         self.enable = True
 
