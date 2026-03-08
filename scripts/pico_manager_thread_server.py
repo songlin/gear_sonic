@@ -49,6 +49,7 @@ from gear_sonic.trl.utils.torch_transform import (
 try:
     from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (
         build_command_message,
+        build_ctrl_message,
         build_planner_message,
         pack_pose_message,
     )
@@ -56,6 +57,9 @@ except ImportError:
 
     def build_command_message(*args, **kwargs) -> bytes:
         raise RuntimeError("build_command_message unavailable")
+
+    def build_ctrl_message(*args, **kwargs) -> bytes:
+        raise RuntimeError("build_ctrl_message unavailable")
 
     def build_planner_message(*args, **kwargs) -> bytes:
         raise RuntimeError("build_planner_message unavailable")
@@ -1893,7 +1897,14 @@ def run_pico_manager(
     #   Emergency stop from any mode: A+B+X+Y (start_combo) --> OFF
     #   POSE_PAUSE: left_menu_button held --> POSE_PAUSE, released --> POSE
     #
-    print("Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy")
+    #   Global action (any mode): right_axis_click --> broadcast "ctrl/drop_robot"
+    #     Sim receives this and slowly lowers the robot onto the ground.
+    #
+    #   Global action (any mode, highest priority): left_grip + right_grip --> broadcast "ctrl/reset_env"
+    #     Sim receives this and calls env.reset() to restart the episode.
+    #
+    print("Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy, "
+          "R-stick-click=drop robot, L-grip+R-grip=reset env")
     current_mode = StreamMode.OFF
     # Track which mode VR_3PT was entered from, so left_axis_click returns to it.
     # Will be either PLANNER or PLANNER_FROZEN_UPPER_BODY.
@@ -1903,13 +1914,30 @@ def run_pico_manager(
         prev_by_pressed = False
         prev_start_combo = False
         prev_left_axis_click = False
+        prev_right_axis_click = False
+        prev_both_grips = False
         while True:
             # Poll Pico controller for buttons/axes
             a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons()
 
-            left_menu_button, _, _, _, _ = get_controller_inputs()
+            left_menu_button, _, _, left_grip, right_grip = get_controller_inputs()
 
-            left_axis_click, _ = get_axis_clicks()
+            left_axis_click, right_axis_click = get_axis_clicks()
+
+            # Rising edge: right joystick click -> tell sim to lower robot to ground slowly.
+            # Safe to press in any mode; the sim handles the gradual descent.
+            right_axis_click_now = bool(right_axis_click)
+            if right_axis_click_now and not prev_right_axis_click:
+                socket.send(build_ctrl_message(drop_robot=True))
+                print("[Manager] DROP command sent — robot will lower to ground slowly")
+            prev_right_axis_click = right_axis_click_now
+
+            # Rising edge: both grips squeezed -> reset env (highest priority, any mode).
+            both_grips_now = left_grip > 0.5 and right_grip > 0.5
+            if both_grips_now and not prev_both_grips:
+                socket.send(build_ctrl_message(reset_env=True))
+                print("[Manager] RESET command sent — MuJoCo env will reset")
+            prev_both_grips = both_grips_now
 
             # Rising edge: A+X pressed together -> toggle POSE/PLANNER mode
             ax_pressed = (a_pressed) and (x_pressed)

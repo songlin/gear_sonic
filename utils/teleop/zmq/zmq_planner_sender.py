@@ -158,6 +158,22 @@ def build_planner_message(
     return b"planner" + header + payload
 
 
+def build_ctrl_message(drop_robot: bool = False, reset_env: bool = False) -> bytes:
+    """
+    Assemble a 'ctrl' topic message for simulation control.
+      - drop_robot: bool (True = begin controlled lowering of robot to ground)
+      - reset_env:  bool (True = request a full MuJoCo environment reset)
+    Returns: bytes ready to send via socket.send()
+    """
+    fields = [
+        {"name": "drop_robot", "dtype": "bool", "shape": [1]},
+        {"name": "reset_env",  "dtype": "bool", "shape": [1]},
+    ]
+    payload = struct.pack("BB", 1 if drop_robot else 0, 1 if reset_env else 0)
+    header = _build_header(fields, version=1, count=1)
+    return b"ctrl" + header + payload
+
+
 def pack_pose_message(pose_data: dict, topic: str = "pose", version: int = 3) -> bytes:
     """
     Pack pose/action data into ZMQ message format:
