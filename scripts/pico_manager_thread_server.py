@@ -1932,9 +1932,10 @@ def run_pico_manager(
                 print("[Manager] DROP command sent — robot will lower to ground slowly")
             prev_right_axis_click = right_axis_click_now
 
-            # Rising edge: both grips squeezed -> reset env (highest priority, any mode).
+            # Rising edge: both grips squeezed -> enter PLANNER mode then reset env.
             both_grips_now = left_grip > 0.5 and right_grip > 0.5
-            if both_grips_now and not prev_both_grips:
+            grip_reset_triggered = both_grips_now and not prev_both_grips
+            if grip_reset_triggered:
                 socket.send(build_ctrl_message(reset_env=True))
                 print("[Manager] RESET command sent — MuJoCo env will reset")
             prev_both_grips = both_grips_now
@@ -1949,6 +1950,9 @@ def run_pico_manager(
             start_combo = (a_pressed) and (b_pressed) and (x_pressed) and (y_pressed)
 
             new_mode = current_mode
+            if grip_reset_triggered:
+                print("[Manager] Force entering Planner Mode before resetting.")
+                new_mode = StreamMode.PLANNER
             if current_mode == StreamMode.OFF:
                 if start_combo and not prev_start_combo:
                     new_mode = StreamMode.PLANNER
