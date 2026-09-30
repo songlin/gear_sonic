@@ -299,12 +299,17 @@ class BaseConfig(ArgsConfigTemplate):
         if self.gravity_compensation_joints is None:
             self.gravity_compensation_joints = ["arms"]
 
-        try:
-            self.commit_id = (
-                subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-            )
-        except Exception:
-            self.commit_id = ""
+        # try:
+        #     self.commit_id = (
+        #         subprocess.check_output(
+        #             ["git", "rev-parse", "HEAD"],
+        #             stderr=subprocess.DEVNULL,
+        #         )
+        #         .decode("utf-8")
+        #         .strip()
+        #     )
+        # except Exception:
+        self.commit_id = ""
 
     def load_wbc_yaml(self) -> dict:
         """Load and merge wbc yaml with dataclass overrides"""
