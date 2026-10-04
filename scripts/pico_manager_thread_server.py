@@ -1837,6 +1837,7 @@ def run_pico_manager(
     enable_smpl_vis: bool = False,
     auto_vr3pt: bool = False,
     auto_pose: bool = False,
+    recording_clear_address: str = "",
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -1868,6 +1869,18 @@ def run_pico_manager(
     debug_socket.setsockopt_string(zmq.SUBSCRIBE, "g1_debug")
     debug_socket.setsockopt(zmq.CONFLATE, 1)
     debug_socket.connect("tcp://localhost:5557")
+
+    recording_clear_socket = None
+    recording_follow_since_ns = 0
+    recording_last_clear_id = 0
+    if recording_clear_address:
+        if not recording_clear_address.startswith("ipc:///"):
+            raise ValueError("Recording clear requests require an absolute private IPC address")
+        recording_clear_socket = context.socket(zmq.PULL)
+        recording_clear_socket.setsockopt(zmq.RCVHWM, 64)
+        recording_clear_socket.setsockopt(zmq.LINGER, 0)
+        recording_clear_socket.bind(recording_clear_address)
+        print(f"[RecordingClear] Receiving requests at {recording_clear_address}", flush=True)
 
     # Print available locomotion modes
     try:
@@ -2129,6 +2142,51 @@ def run_pico_manager(
                     # (read via g1_debug feedback + FK) to prevent sudden jumps
                     planner_streamer.recalibrate_for_vr3pt()
 
+            if recording_clear_socket is not None and new_mode != StreamMode.POSE_PAUSE:
+                if new_mode == StreamMode.POSE and current_mode not in (
+                    StreamMode.POSE, StreamMode.POSE_PAUSE
+                ):
+                    recording_follow_since_ns = time.monotonic_ns()
+                # Publish from this thread before the next pose packet. A mode
+                # command below cancels an already armed native request.
+                for _ in range(64):
+                    try:
+                        request = recording_clear_socket.recv_json(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    except ValueError as exc:
+                        print(f"[RecordingClear] Invalid request: {exc}", flush=True)
+                        continue
+                    if not isinstance(request, dict):
+                        print("[RecordingClear] Invalid request object", flush=True)
+                        continue
+                    identifier = request.get("id")
+                    requested_ns = request.get("requested_ns")
+                    if (type(identifier) is not int or not 0 < identifier < 2**63
+                            or type(requested_ns) is not int or requested_ns <= 0):
+                        print("[RecordingClear] Invalid request identifier or timestamp", flush=True)
+                        continue
+                    if identifier <= recording_last_clear_id:
+                        print(f"[RecordingClear] Duplicate or older request ignored: {identifier}", flush=True)
+                        continue
+                    recording_last_clear_id = identifier
+                    following = current_mode in (StreamMode.POSE, StreamMode.POSE_PAUSE)
+                    if (not following or new_mode != StreamMode.POSE or grip_reset_triggered
+                            or requested_ns < recording_follow_since_ns):
+                        print(f"[RecordingClear] Request cancelled before send: {identifier}", flush=True)
+                        continue
+                    message = pack_pose_message(
+                        {
+                            "start": np.array([False]),
+                            "stop": np.array([False]),
+                            "planner": np.array([False]),
+                            "recording_clear_id": np.array([identifier], dtype=np.int64),
+                        },
+                        topic="command", version=1,
+                    )
+                    socket.send(message)
+                    print(f"[RecordingClear] Request sent: {identifier}", flush=True)
+
             # Run one iteration of the new mode
             if new_mode == StreamMode.POSE:
                 try:
@@ -2178,6 +2236,8 @@ def run_pico_manager(
         # Cleanup resources
         reader.stop()
         three_point.close()
+        if recording_clear_socket is not None:
+            recording_clear_socket.close(linger=0)
         socket.close()
         context.term()
         print("[Manager] Shutdown complete")
@@ -2281,6 +2341,11 @@ if __name__ == "__main__":
              "PLANNER. Same CALIB_FULL on A+B+X+Y; skips the extra A+X. "
              "This is the mode where the operator's body maps onto the robot.",
     )
+    parser.add_argument(
+        "--recording-clear-address",
+        default="",
+        help="Private IPC address for recording clear requests (default: disabled)",
+    )
 
     args = parser.parse_args()
 
@@ -2324,6 +2389,7 @@ if __name__ == "__main__":
             enable_smpl_vis=args.vis_smpl,
             auto_vr3pt=args.auto_vr3pt,
             auto_pose=args.auto_pose,
+            recording_clear_address=args.recording_clear_address,
         )
     else:
         # Run legacy single-thread pose streaming
